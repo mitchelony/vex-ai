@@ -4,10 +4,14 @@ Starter research-and-development workspace for an AAMU VEX AI programming team.
 
 ## What is here
 - `research_vex_ai/`: current-season notes and the initial research plan
+- `vexai/devices.py`: Thor device names and port map
 - `vexai/robots.py`: Thor and Loki hardware-role definitions
 - `vexai/strategy.py`: first-pass two-robot autonomy planner
+- `vexai/simulation.py`: stepped match simulation engine and built-in scenarios
 - `vexai/sim.py`: laptop-friendly simulator entrypoint
+- `tests/test_devices.py`: tests for the Thor device map
 - `tests/test_robots.py`: tests for the robot definitions
+- `tests/test_simulation.py`: tests for stepped match simulation
 - `tests/test_strategy.py`: behavior tests for the planner
 
 ## Current bot structure
@@ -20,6 +24,61 @@ Starter research-and-development workspace for an AAMU VEX AI programming team.
 ## Sensor layout
 - `Thor`: AI sensor front, GPS rear, optical sensor in intake
 - `Loki`: AI sensor front, GPS on body, optical sensor in intake
+- bench-test optical detection now uses hue ranges plus object/brightness gating instead of relying only on the Optical sensor's named color
+
+## Current Thor port map
+- Drive motors
+  `left_motor_a` port 1
+  `left_motor_b` port 2
+  `right_motor_a` port 3
+  `right_motor_b` port 4
+  VEX `SmartDrive` is configured with drivetrain GPS on port 19
+- Intake motors
+  `f_1_2` port 5
+  `f_3` port 6
+  `b_1` port 7
+  `b_2_3` port 8
+  `b_4` port 9
+  `f_4` port 20
+- Sensors
+  `ai_vision_11` port 11
+  `optical_12` port 12
+  `gps_13` port 13
+
+## Current Thor storage-mode routing
+- optical sensor sits between the front intake group and `b_2_3`
+- `f_1_2` and `f_3` spin right
+- `b_1` spins left
+- `b_2_3` spins right
+- `b_4` routes by detected color
+  alliance ball: spin left into alliance storage
+  opponent ball: spin right faster into the overhead opponent hold
+- `f_4` is now wired in bench-test code
+  alliance ball path: spin left
+  opponent ball path: spin right faster
+- alliance color should be switchable in code; current starter examples default to blue
+
+## Current Thor scoring-mode starter
+- scoring mode runs while `R2` is held
+- `b_1`, `b_2_3`, and `b_4` spin right constantly during scoring
+- current starter uses three score targets:
+  low: `f_1_2` spins left and `f_3`/`f_4` stay off
+  middle: `f_1_2` spins right and `f_3` spins left while `f_4` stays off
+  high: `f_1_2` spins right, `f_3` spins right, and `f_4` spins left
+- this is a first bench-test assumption until the exact scoring path is tuned on the real robot
+
+## Current bench-test controls
+- left joystick
+  `Axis3`: forward and backward drive
+  `Axis4`: turning
+- drive control uses the generated left/right drivetrain motor groups from the VEX 4-motor `SmartDrive` configuration
+- `R1`: storage mode while held
+- `R2`: scoring mode while held
+- `Up`: select high-goal scoring path
+- `Left`: select middle-goal scoring path
+- `Down`: select low-goal scoring path
+- `A`: set alliance color to blue
+- `B`: set alliance color to red
 
 ## Why start this way
 The workspace is intentionally **portable first**. That gives the team a place to design match logic, role assignment, and robot-to-robot coordination before wiring everything into a full VEXcode project on the brain.
@@ -50,6 +109,22 @@ Run the simple simulator:
 ```bash
 make sim
 ```
+
+Run a different built-in simulation scenario:
+
+```bash
+python3 -m vexai.sim --scenario link-loss
+```
+
+## Current simulator behavior
+- simulates a full 120-second VAIRC-style match in 5-second steps by default
+- switches from Isolation to Interaction automatically
+- injects configurable control-bonus threat events
+- can inject link failures for Thor or Loki
+- updates loose blocks, carried blocks, score, parking, and opponent pressure over time
+- records a full decision timeline so you can see what Thor and Loki chose at each step
+
+The scoring inside the simulator is intentionally heuristic. It is not an official Push Back scoring calculator. It is there to help compare strategy behavior, not to replace the game manual.
 
 ## Recommended next steps
 1. Replace the simple `FieldState` with real sensor-fed state:
