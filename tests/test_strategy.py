@@ -72,7 +72,7 @@ class StrategyTests(unittest.TestCase):
         self.assertAssignment(plan.alpha, Action.PARK, Zone.PARK_ZONE)
         self.assertAssignment(plan.beta, Action.PARK, Zone.PARK_ZONE)
 
-    def test_link_failures_stop_aggressive_plans(self):
+    def test_link_failures_shift_to_recovery_and_low_risk_partner_play(self):
         field = FieldState(
             phase=MatchPhase.INTERACTION,
             seconds_remaining=50,
@@ -86,7 +86,7 @@ class StrategyTests(unittest.TestCase):
         plan = choose_plan(field, alpha, beta)
 
         self.assertAssignment(plan.alpha, Action.VERIFY_LINK, Zone.LINK_STATION)
-        self.assertAssignment(plan.beta, Action.HOLD_POSITION, Zone.CENTER_GOAL)
+        self.assertAssignment(plan.beta, Action.COLLECT_BLOCKS, Zone.CENTER_GOAL)
 
 
 if __name__ == "__main__":

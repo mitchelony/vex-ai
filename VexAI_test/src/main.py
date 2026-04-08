@@ -16,20 +16,19 @@ controller_1 = Controller(PRIMARY)
 # AI Vision Code Descriptions
 ai_vision_11 = AiVision(Ports.PORT11, AiVision.ALL_AIOBJS)
 optical_12 = Optical(Ports.PORT12)
-gps_13 = Gps(Ports.PORT13, 0.00, -587.38, MM, 180)
 f_1_2 = Motor(Ports.PORT5, GearSetting.RATIO_36_1, False)
 f_3 = Motor(Ports.PORT6, GearSetting.RATIO_36_1, False)
 b_1 = Motor(Ports.PORT7, GearSetting.RATIO_36_1, False)
 b_2_3 = Motor(Ports.PORT8, GearSetting.RATIO_36_1, False)
 b_4 = Motor(Ports.PORT9, GearSetting.RATIO_36_1, False)
-f_4 = Motor(Ports.PORT20, GearSetting.RATIO_36_1, False)
+f_4 = Motor(Ports.PORT10, GearSetting.RATIO_36_1, False)
 left_motor_a = Motor(Ports.PORT1, GearSetting.RATIO_36_1, False)
 left_motor_b = Motor(Ports.PORT2, GearSetting.RATIO_36_1, False)
 left_drive_smart = MotorGroup(left_motor_a, left_motor_b)
 right_motor_a = Motor(Ports.PORT3, GearSetting.RATIO_36_1, True)
 right_motor_b = Motor(Ports.PORT4, GearSetting.RATIO_36_1, True)
 right_drive_smart = MotorGroup(right_motor_a, right_motor_b)
-drivetrain_gps = Gps(Ports.PORT19, 0.00, -587.38, MM, 180)
+drivetrain_gps = Gps(Ports.PORT13, 0.00, -587.38, MM, 180)
 drivetrain = SmartDrive(left_drive_smart, right_drive_smart, drivetrain_gps, 319.19, 320, 40, MM, 1)
 
 
@@ -134,6 +133,123 @@ RED_HUE_MAX = 25
 RED_HUE_WRAP_MIN = 330
 BLUE_HUE_MIN = 180
 BLUE_HUE_MAX = 260
+USE_COMPETITION_TEMPLATE = True
+AUTONOMOUS_LOG_TO_SD = True
+AUTONOMOUS_LOG_FILE = "thor_replay.jsonl"
+AUTONOMOUS_DURATION_MS = 120000
+AUTONOMOUS_SNAPSHOT_INTERVAL_MS = 200
+DENIAL_CAPACITY = 3
+DENIAL_ESTIMATE = 0
+ALLIANCE_STORAGE_ESTIMATE = 0
+LAST_COUNTED_OBJECT_PRESENT = False
+
+
+def json_escape(value):
+    return str(value).replace("\\", "\\\\").replace("\"", "\\\"")
+
+
+def sd_logging_available():
+    return AUTONOMOUS_LOG_TO_SD and brain.sdcard.is_inserted()
+
+
+def reset_autonomous_log():
+    if not sd_logging_available():
+        return False
+    brain.sdcard.savefile(AUTONOMOUS_LOG_FILE, bytearray("", "utf-8"))
+    return True
+
+
+def append_autonomous_log_line(line):
+    if not sd_logging_available():
+        return False
+    brain.sdcard.appendfile(AUTONOMOUS_LOG_FILE, bytearray(line + "\n", "utf-8"))
+    return True
+
+
+def current_load_state(detected_color, is_near_object):
+    if not is_near_object:
+        if ALLIANCE_STORAGE_ESTIMATE > 0:
+            return "ALLIANCE_STORED"
+        return "EMPTY"
+    if detected_color == ALLIANCE_COLOR:
+        return "ALLIANCE_HELD"
+    if detected_color == "unknown":
+        return "EMPTY"
+    return "OPPONENT_HELD"
+
+
+def current_autonomous_intent(detected_color, is_near_object, seconds_remaining):
+    if seconds_remaining <= 10:
+        return "PARK", "endgame_park"
+    if is_near_object and detected_color == ALLIANCE_COLOR:
+        return "SCORE_HIGH", "loaded_score"
+    if is_near_object and detected_color not in ("unknown", ALLIANCE_COLOR):
+        return "CLEAR_LANE", "collect_best_region"
+    return "COLLECT_REGION", "collect_best_region"
+
+
+def update_ball_estimates(detected_color, is_near_object):
+    global ALLIANCE_STORAGE_ESTIMATE
+    global DENIAL_ESTIMATE
+    global LAST_COUNTED_OBJECT_PRESENT
+
+    if not is_near_object:
+        LAST_COUNTED_OBJECT_PRESENT = False
+        return
+
+    if LAST_COUNTED_OBJECT_PRESENT:
+        return
+
+    LAST_COUNTED_OBJECT_PRESENT = True
+    if detected_color == ALLIANCE_COLOR:
+        ALLIANCE_STORAGE_ESTIMATE += 1
+    elif detected_color != "unknown":
+        DENIAL_ESTIMATE = min(DENIAL_CAPACITY, DENIAL_ESTIMATE + 1)
+
+
+def estimate_region_counts():
+    ai_objects = ai_vision_11.take_snapshot(AiVision.ALL_AIOBJS)
+    object_count = len(ai_objects)
+    long_estimate = object_count
+    center_estimate = max(0, object_count - 1)
+    return long_estimate, center_estimate
+
+
+def build_autonomous_log_line(timestamp_ms, seconds_remaining, detected_color, hue_degrees, brightness_pct, is_near_object):
+    load_state = current_load_state(detected_color, is_near_object)
+    intent_name, reason_code = current_autonomous_intent(detected_color, is_near_object, seconds_remaining)
+    long_estimate, center_estimate = estimate_region_counts()
+    return (
+        "{"
+        "\"t_ms\":%d,"
+        "\"robot_local\":\"thor\","
+        "\"field\":{\"phase\":\"INTERACTION\",\"seconds_remaining\":%d,\"loose_blocks_by_region\":{\"LONG_GOAL\":%d,\"CENTER_GOAL\":%d}},"
+        "\"thor\":{\"pose\":{\"x_mm\":%.1f,\"y_mm\":%.1f,\"heading_deg\":%.1f},\"load_state\":\"%s\",\"denial_estimate\":%d},"
+        "\"loki\":{\"pose\":{\"x_mm\":0.0,\"y_mm\":0.0,\"heading_deg\":0.0},\"load_state\":\"EMPTY\"},"
+        "\"link_status\":{\"thor\":true,\"loki\":false},"
+        "\"planner\":{\"intent_local\":\"%s\",\"reason_local\":\"%s\"},"
+        "\"confidence\":{\"gps\":%.2f,\"vision\":%.2f},"
+        "\"sensor\":{\"ball\":\"%s\",\"hue\":%.1f,\"brightness\":%.1f,\"near\":%s}"
+        "}"
+    ) % (
+        timestamp_ms,
+        seconds_remaining,
+        long_estimate,
+        center_estimate,
+        drivetrain_gps.x_position(MM),
+        drivetrain_gps.y_position(MM),
+        drivetrain_gps.heading(),
+        load_state,
+        DENIAL_ESTIMATE,
+        intent_name,
+        reason_code,
+        1.0,
+        1.0 if is_near_object else 0.5,
+        json_escape(detected_color),
+        hue_degrees,
+        brightness_pct,
+        "true" if is_near_object else "false",
+    )
 
 
 def set_alliance_color(color_name):
@@ -159,7 +275,7 @@ def spin_drive_group(motor_group, speed_pct):
         motor_group.stop()
         return
 
-    direction = FORWARD if speed_pct >= 0 else REVERSE
+    direction = REVERSE if speed_pct >= 0 else FORWARD
     motor_group.spin(direction, abs(speed_pct), PERCENT)
 
 
@@ -298,6 +414,28 @@ def draw_status(active_mode, detected_color, hue_degrees, brightness_pct, is_nea
     brain.screen.print("Down low  A blue  B red")
 
 
+def draw_autonomous_status(seconds_remaining, detected_color, intent_name, reason_code):
+    brain.screen.clear_screen()
+    brain.screen.set_cursor(1, 1)
+    brain.screen.print("Thor Autonomous")
+    brain.screen.new_line()
+    brain.screen.print("Alliance: {}".format(ALLIANCE_COLOR))
+    brain.screen.new_line()
+    brain.screen.print("Remain: {}s".format(seconds_remaining))
+    brain.screen.new_line()
+    brain.screen.print("Ball: {}".format(detected_color))
+    brain.screen.new_line()
+    brain.screen.print("Intent: {}".format(intent_name))
+    brain.screen.new_line()
+    brain.screen.print("Reason: {}".format(reason_code))
+    brain.screen.new_line()
+    brain.screen.print("Storage: {}".format(ALLIANCE_STORAGE_ESTIMATE))
+    brain.screen.new_line()
+    brain.screen.print("Denial: {}/{}".format(DENIAL_ESTIMATE, DENIAL_CAPACITY))
+    brain.screen.new_line()
+    brain.screen.print("Log: {}".format("sd" if sd_logging_available() else "off"))
+
+
 def update_alliance_selection():
     global ALLIANCE_COLOR
     if controller_1.buttonA.pressing():
@@ -316,7 +454,55 @@ def update_score_target():
         SCORE_TARGET = "low"
 
 
-def main():
+def run_autonomous_cycle():
+    detected_color, hue_degrees, brightness_pct, is_near_object = get_optical_snapshot()
+    seconds_elapsed = int(brain.timer.time(MSEC) / 1000)
+    seconds_remaining = max(0, 120 - seconds_elapsed)
+    intent_name, reason_code = current_autonomous_intent(detected_color, is_near_object, seconds_remaining)
+
+    if intent_name == "SCORE_HIGH":
+        run_scoring_mode()
+    elif intent_name == "CLEAR_LANE":
+        run_storage_mode()
+    elif intent_name == "COLLECT_REGION":
+        run_storage_mode()
+    else:
+        stop_storage_path()
+
+    update_ball_estimates(detected_color, is_near_object)
+    draw_autonomous_status(seconds_remaining, detected_color, intent_name, reason_code)
+    append_autonomous_log_line(
+        build_autonomous_log_line(
+            brain.timer.time(MSEC),
+            seconds_remaining,
+            detected_color,
+            hue_degrees,
+            brightness_pct,
+            is_near_object,
+        )
+    )
+
+
+def autonomous():
+    global DENIAL_ESTIMATE
+    global ALLIANCE_STORAGE_ESTIMATE
+    global LAST_COUNTED_OBJECT_PRESENT
+
+    DENIAL_ESTIMATE = 0
+    ALLIANCE_STORAGE_ESTIMATE = 0
+    LAST_COUNTED_OBJECT_PRESENT = False
+    optical_12.set_light_power(100, PERCENT)
+    brain.timer.clear()
+    reset_autonomous_log()
+
+    while brain.timer.time(MSEC) < AUTONOMOUS_DURATION_MS:
+        run_autonomous_cycle()
+        wait(AUTONOMOUS_SNAPSHOT_INTERVAL_MS, MSEC)
+
+    stop_storage_path()
+
+
+def driver_control():
     detected_color = "unknown"
     hue_degrees = 0
     brightness_pct = 0
@@ -345,4 +531,9 @@ def main():
         wait(20, MSEC)
 
 
-main()
+if USE_COMPETITION_TEMPLATE:
+    competition = Competition(driver_control, autonomous)
+    while True:
+        wait(100, MSEC)
+else:
+    driver_control()

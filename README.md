@@ -6,13 +6,24 @@ Starter research-and-development workspace for an AAMU VEX AI programming team.
 - `research_vex_ai/`: current-season notes and the initial research plan
 - `vexai/devices.py`: Thor device names and port map
 - `vexai/robots.py`: Thor and Loki hardware-role definitions
-- `vexai/strategy.py`: first-pass two-robot autonomy planner
+- `vexai/state.py`: world-state builder from sensors, mechanism memory, and partner telemetry
+- `vexai/planner.py`: two-robot intent planner with task locking and opening-book support
+- `vexai/tasks.py`: persistent task state machines and simple approach waypoints
+- `vexai/link.py`: compact partner telemetry packet codec
+- `vexai/runtime.py`: one-cycle autonomy orchestrator for VEXcode-facing integration
+- `vexai/telemetry.py`: in-memory and JSONL replay logging helpers
+- `vexai/strategy.py`: legacy compatibility wrapper over the new planner
 - `vexai/simulation.py`: stepped match simulation engine and built-in scenarios
 - `vexai/sim.py`: laptop-friendly simulator entrypoint
 - `tests/test_devices.py`: tests for the Thor device map
 - `tests/test_robots.py`: tests for the robot definitions
 - `tests/test_simulation.py`: tests for stepped match simulation
 - `tests/test_strategy.py`: behavior tests for the planner
+- `tests/test_state.py`: world-state build coverage
+- `tests/test_planner_v2.py`: new planner behavior coverage
+- `tests/test_tasks_v2.py`: task persistence and waypoint coverage
+- `tests/test_link_v2.py`: partner packet codec coverage
+- `tests/test_telemetry_v2.py`: replay log coverage
 
 ## Current bot structure
 - `Thor`: large vertical-intake bot with two modes
@@ -95,7 +106,52 @@ Official links are recorded in [research_vex_ai/official_notes.md](/Users/MAC/Pr
 - Score immediately if a robot is already loaded
 - Defend control bonus pressure during Interaction
 - Force both robots to park in the last 10 seconds
-- Stop aggressive play and recover the link if one robot loses communication
+- Recover the disconnected robot while allowing the still-linked partner to continue low-risk local play
+- Keep active tasks locked long enough to avoid thrashing between assignments
+- Run a small scripted opening during early Isolation before handing off to reactive planning
+
+## New autonomy stack
+- `state.py`
+  builds `WorldState` from local sensor frames, mechanism memory, and partner telemetry
+- `planner.py`
+  converts `WorldState` into `RobotIntent` values with explicit reason codes
+- `tasks.py`
+  persists collect/score/recovery tasks and provides fixed safe-approach waypoints
+- `runtime.py`
+  runs one full autonomy cycle:
+  state build, planning, task selection, partner packet generation, and replay logging
+- `telemetry.py`
+  writes newline-delimited JSON suitable for SD-card replay and the laptop viewer
+
+## Replay workflow
+1. Run autonomy on the Brain and write JSONL snapshots to the SD card.
+2. Move the SD card log file onto the laptop.
+3. Launch the replay viewer:
+
+```bash
+python3 tools/replay_viewer.py /path/to/run.jsonl
+```
+
+The viewer renders Thor and Loki poses, field estimates, planner intent, and confidence flags over time.
+
+Set up the local replay-viewer environment:
+
+```bash
+python3 -m venv .venv
+./.venv/bin/pip install matplotlib
+```
+
+Launch the viewer from the virtualenv:
+
+```bash
+./.venv/bin/python tools/replay_viewer.py /path/to/run.jsonl
+```
+
+## VEXcode logging stub
+- `VexAI_test/src/main.py` now supports a minimal competition-mode autonomous logger.
+- Bench mode is still the default.
+- To run the logging stub on the Brain, set `USE_COMPETITION_TEMPLATE = True`.
+- The autonomous callback writes newline-delimited JSON snapshots to `thor_replay.jsonl` on the SD card when one is inserted.
 
 ## Local usage
 Run tests:

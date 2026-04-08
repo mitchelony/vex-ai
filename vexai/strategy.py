@@ -1,10 +1,18 @@
 from dataclasses import dataclass
 from enum import Enum, auto
 
-
-class MatchPhase(Enum):
-    ISOLATION = auto()
-    INTERACTION = auto()
+from vexai.planner import GoalTarget, IntentKind, plan_team
+from vexai.robots import RobotName
+from vexai.state import (
+    FieldRegion,
+    FieldWorldState,
+    LoadState,
+    MatchPhase,
+    Pose2D,
+    RobotWorldState,
+    ThorStorageState,
+    WorldState,
+)
 
 
 class Action(Enum):
@@ -52,52 +60,85 @@ class TeamPlan:
     beta: Assignment
 
 
-def _collect_long() -> Assignment:
-    return Assignment(Action.COLLECT_BLOCKS, Zone.LONG_GOAL)
+def _zone_to_region(zone: Zone) -> FieldRegion:
+    mapping = {
+        Zone.LONG_GOAL: FieldRegion.LONG_GOAL,
+        Zone.CENTER_GOAL: FieldRegion.CENTER_GOAL,
+        Zone.PARK_ZONE: FieldRegion.PARK_ZONE,
+        Zone.LINK_STATION: FieldRegion.LINK_STATION,
+        Zone.NONE: FieldRegion.NONE,
+    }
+    return mapping[zone]
 
 
-def _collect_center() -> Assignment:
-    return Assignment(Action.COLLECT_BLOCKS, Zone.CENTER_GOAL)
+def _region_to_zone(region: FieldRegion) -> Zone:
+    mapping = {
+        FieldRegion.LONG_GOAL: Zone.LONG_GOAL,
+        FieldRegion.CENTER_GOAL: Zone.CENTER_GOAL,
+        FieldRegion.PARK_ZONE: Zone.PARK_ZONE,
+        FieldRegion.LINK_STATION: Zone.LINK_STATION,
+        FieldRegion.NONE: Zone.NONE,
+    }
+    return mapping[region]
+
+
+def _load_state_from_legacy(robot: RobotState) -> LoadState:
+    return LoadState.ALLIANCE_HELD if robot.carrying_blocks else LoadState.EMPTY
+
+
+def _legacy_robot_world(name: RobotName, robot: RobotState) -> RobotWorldState:
+    return RobotWorldState(
+        name=name,
+        linked=robot.linked,
+        link_age_ms=0 if robot.linked else 2_000,
+        pose=Pose2D(x_mm=0.0, y_mm=0.0, heading_deg=0.0, timestamp_ms=0, stale=False),
+        load_state=_load_state_from_legacy(robot),
+        parked=robot.parked,
+        current_task_id=None,
+        current_intent_kind=None,
+        task_locked_until_ms=0,
+        gps_confidence=1.0,
+        vision_confidence=1.0,
+        jammed=False,
+        storage=ThorStorageState(),
+    )
+
+
+def _assignment_from_intent(intent, default_region: FieldRegion) -> Assignment:
+    if intent.task_kind == IntentKind.COLLECT_REGION:
+        return Assignment(Action.COLLECT_BLOCKS, _region_to_zone(intent.target_region or default_region))
+    if intent.task_kind in (IntentKind.SCORE_LOW, IntentKind.SCORE_HIGH):
+        return Assignment(Action.SCORE_GOAL, _region_to_zone(intent.target_region or default_region))
+    if intent.task_kind == IntentKind.DEFEND_CONTROL_BONUS:
+        return Assignment(Action.DEFEND_CONTROL_BONUS, _region_to_zone(intent.target_region))
+    if intent.task_kind == IntentKind.PARK:
+        return Assignment(Action.PARK, Zone.PARK_ZONE)
+    if intent.task_kind == IntentKind.VERIFY_LINK:
+        return Assignment(Action.VERIFY_LINK, Zone.LINK_STATION)
+    return Assignment(Action.HOLD_POSITION, _region_to_zone(intent.target_region or default_region))
 
 
 def choose_plan(field: FieldState, alpha: RobotState, beta: RobotState) -> TeamPlan:
-    if not alpha.linked or not beta.linked:
-        recovery = TeamPlan(
-            alpha=Assignment(Action.HOLD_POSITION, Zone.CENTER_GOAL),
-            beta=Assignment(Action.HOLD_POSITION, Zone.CENTER_GOAL),
-        )
-
-        if not alpha.linked:
-            recovery = TeamPlan(
-                alpha=Assignment(Action.VERIFY_LINK, Zone.LINK_STATION),
-                beta=recovery.beta,
-            )
-
-        if not beta.linked:
-            recovery = TeamPlan(
-                alpha=recovery.alpha,
-                beta=Assignment(Action.VERIFY_LINK, Zone.LINK_STATION),
-            )
-
-        return recovery
-
-    if field.seconds_remaining <= 10:
-        park = Assignment(Action.PARK, Zone.PARK_ZONE)
-        return TeamPlan(alpha=park, beta=park)
-
-    if field.phase == MatchPhase.INTERACTION and field.control_bonus_threatened:
-        return TeamPlan(
-            alpha=Assignment(Action.DEFEND_CONTROL_BONUS, Zone.LONG_GOAL),
-            beta=_collect_center(),
-        )
-
-    alpha_task = Assignment(Action.SCORE_GOAL, Zone.LONG_GOAL) if alpha.carrying_blocks else _collect_long()
-    beta_task = Assignment(Action.SCORE_GOAL, Zone.CENTER_GOAL) if beta.carrying_blocks else _collect_center()
-
-    if field.phase == MatchPhase.ISOLATION:
-        return TeamPlan(alpha=alpha_task, beta=beta_task)
-
-    if field.loose_blocks_center > field.loose_blocks_long and not beta.carrying_blocks:
-        beta_task = _collect_center()
-
-    return TeamPlan(alpha=alpha_task, beta=beta_task)
+    world = WorldState(
+        field=FieldWorldState(
+            phase=field.phase,
+            seconds_remaining=field.seconds_remaining,
+            loose_blocks_by_region={
+                FieldRegion.LONG_GOAL: field.loose_blocks_long,
+                FieldRegion.CENTER_GOAL: field.loose_blocks_center,
+            },
+            control_bonus_threat_score=1.0 if field.control_bonus_threatened else 0.0,
+            goal_pressure_by_region={
+                FieldRegion.LONG_GOAL: 1.0 if field.control_bonus_threatened else 0.0,
+                FieldRegion.CENTER_GOAL: 0.0,
+            },
+            opening_script_active=field.phase == MatchPhase.ISOLATION and field.seconds_remaining >= 110,
+        ),
+        thor=_legacy_robot_world(RobotName.THOR, alpha),
+        loki=_legacy_robot_world(RobotName.LOKI, beta),
+    )
+    team_intents = plan_team(world, now_ms=0)
+    return TeamPlan(
+        alpha=_assignment_from_intent(team_intents.thor, FieldRegion.LONG_GOAL),
+        beta=_assignment_from_intent(team_intents.loki, FieldRegion.CENTER_GOAL),
+    )
